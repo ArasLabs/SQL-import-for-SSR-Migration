@@ -1,4 +1,4 @@
-# SQL Import Tool
+# SQL Import for SSR Migration
 
 This pacakge imports an Action which allows you to take a SQL query and convert it into a Query Definition (QD). It also has functionality to generate a report based on the generated Query Definition.
 
@@ -13,13 +13,13 @@ The intended use of this is to migrate Self Service Reports (SSR) to the new Rep
 ## History
 Release | Notes
 --------|--------
-[V1.0](https://github.com/ArasLabs/toc-search-bar/releases/tag/R31) | First release.
+[V1.0](https://github.com/ArasLabs/SQL-import-for-SSR-Migration/releases/tag/V1.0) | First release.
 
 #### Supported Aras Versions
 
 Project | Aras
 --------|------
-[v1.0]()| Releases 28-31
+[v1.0](https://github.com/ArasLabs/SQL-import-for-SSR-Migration/releases/tag/V1.0)| Releases 28-31
 
 ## Installation
 
@@ -38,8 +38,15 @@ Project | Aras
 3. In the `<ReferencedAssemblies>` tag, add the following line: `<name>$(binpath)/Microsoft.SqlServer.TransactSql.ScriptDom.dll</name>`
 4. Within the CSharp Template (around line 300) add the following Using directive to the collection at the top `using Microsoft.SqlServer.TransactSql.ScriptDom;`
 5. Reset IIS
+6. Open up the Aras Package Import tool.
+7. Enter your instance URL and click login to be directed to the login screen. <b>Note:</b> You must log in as `root` for the package import to succeed!
+8. Enter the path to your local ..\CustomFormCSS\Import\imports.mf file in the Manifest File field.
+9. Select labs_SqlImporter in the Available for Import field.
+10. Select Type = Merge and Mode = Thorough Mode.
+11. Click Import in the top left corner.
+12. Close the Aras Package Import tool.
 
-You are now ready to login to Aras and try out this TOC Search Bar.
+You are now ready to login to Aras and start importing your Self Service Reports.
 
 ## Usage
 
@@ -59,7 +66,7 @@ To import your SQL into your new Query Definition:
 
 1. Log in to Aras as admin. If you want to generate Reports, make sure admin has that permission.
 2. Click your User Icon in the top right of the screen.
-3. Under `Actions` click `Import S would for Report Generation`
+3. Under `Actions` click `Import SQL for Report Generation`
 4. Paste the SQL excerpt from the previous section into the SQL text area, set a name for your QD, and select whether or not you would like a Report to be generated as well.  
 5. Click the Submit button to create your QD and Report!
 
