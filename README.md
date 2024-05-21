@@ -40,7 +40,7 @@ Project | Aras
 5. Reset IIS
 6. Open up the Aras Package Import tool.
 7. Enter your instance URL and click login to be directed to the login screen. <b>Note:</b> You must log in as `root` for the package import to succeed!
-8. Enter the path to your local ..\CustomFormCSS\Import\imports.mf file in the Manifest File field.
+8. Enter the path to your local ..\SQL-import-forSSR-Migration\imports.mf file in the Manifest File field.
 9. Select labs_SqlImporter in the Available for Import field.
 10. Select Type = Merge and Mode = Thorough Mode.
 11. Click Import in the top left corner.
