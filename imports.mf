@@ -1,0 +1,3 @@
+<imports>
+  <package name="labs_SqlImporter" path="labs_SqlImporter\Import" />
+</imports>

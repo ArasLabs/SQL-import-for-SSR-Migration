@@ -1,0 +1,804 @@
+﻿<AML>
+ <Item type="Method" id="72C086875F5A4BC5ADEB93323E2BD1CF" action="add">
+  <execution_allowed_to keyed_name="Administrators" type="Identity">2618D6F5A90949BAA7E920D1B04C7EE1</execution_allowed_to>
+  <method_code><![CDATA[var inn = this.getInnovator();
+
+//need to extract results from dialog fromthis.getproperty for each unique value
+var sql = this.getProperty("sql");
+var qdName = this.getProperty("qdName");
+var reportText = this.getProperty("reportBool");
+var reportBool = false;
+if (reportText == "on")
+    reportBool = true;
+
+var SqlToReportOptions = new SqlToReportOptions();
+SqlToReportOptions.Name = qdName;
+SqlToReportOptions.Title = qdName;
+SqlToReportOptions.PrettyAlias = true;
+SqlToReportOptions.GenerateReport = reportBool;
+
+
+var success = Generate(sql,inn,SqlToReportOptions);
+
+return this;
+}
+
+public class SqlToReportOptions
+{
+    public string InnovatorVersion;
+    public string InnovatorDatabase;
+    public string Name;
+    public string Title;
+    public bool PrettyAlias = true;
+    public bool GenerateReport = true;
+    public string SSRRerport;
+    public string RptReport;
+}
+
+public static bool Generate(string sql, Innovator inn, SqlToReportOptions options)
+        {
+
+            QueryDefinition qryDef = new QueryDefinition();
+
+
+            TSql150Parser parser = new TSql150Parser(false);
+            IList<ParseError> parseErrors;
+            TSqlFragment select = parser.Parse(new System.IO.StringReader(sql), out parseErrors);
+
+
+            if (parseErrors.Any())
+            {
+                string errors = "";
+                foreach (var error in parseErrors)
+                {
+                    errors += error.Message + "\r\n";
+                }
+
+                // Show the error message in a MessageBox
+                //MessageBox.Show(errors, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+            var sqlScript = (TSqlScript)select;
+            foreach (TSqlStatement sqlStatement in sqlScript.Batches.SelectMany(sqlBatch => sqlBatch.Statements))
+            {
+
+                if (sqlStatement.GetType() == typeof(SelectStatement))
+                {
+                    if (ProcessSqlSelectStatement(sqlStatement, qryDef) == false)
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    //MessageBox.Show($"Query type not supported: {sqlStatement.GetType()}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return false;
+                }
+            }
+
+
+            // Write Query Definition
+            Item qryDefItem = WriteQueryDefinition(inn, qryDef, options);
+            if (qryDefItem.isError())
+            {
+                //MessageBox.Show($"Error writing Query Definition: {qryDefItem.getErrorDetail()}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return true;
+            }
+            else if (options.GenerateReport == false)
+            {
+                //MessageBox.Show($"QueryDefinition has been successfully generated!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                return true;
+            }
+
+            if (options.GenerateReport)
+            {
+                try
+                {
+                    Item writeReportDefResult = WriteReportDefinition(inn, qryDefItem, qryDef, options);
+                    if (writeReportDefResult.isError())
+                    {
+                        //MessageBox.Show($"Error writing Report Definition: {writeReportDefResult.getErrorDetail()}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        return true;
+                    }
+
+                    //MessageBox.Show($"Report has been successfully generated!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    //MessageBox.Show($"Error writing Report Definition: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return true;
+                }
+            }
+
+            //MessageBox.Show("Something went wrong...", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        private static bool ProcessSqlSelectStatement(TSqlStatement sqlStatement, QueryDefinition qryDef)
+        {
+            if (ExtractTablesAndAliases(((Microsoft.SqlServer.TransactSql.ScriptDom.QuerySpecification)((Microsoft.SqlServer.TransactSql.ScriptDom.SelectStatement)sqlStatement).QueryExpression).FromClause.TableReferences, qryDef)) 
+            {
+                if (ExtractTableProperties(sqlStatement, qryDef))
+                {
+                   return ExtractWhereDefinition(((Microsoft.SqlServer.TransactSql.ScriptDom.QuerySpecification)((Microsoft.SqlServer.TransactSql.ScriptDom.SelectStatement)sqlStatement).QueryExpression).WhereClause, qryDef);
+                }
+            }
+
+            return false;
+        }
+
+        static bool ExtractTablesAndAliases(IList<TableReference> tableReferences, QueryDefinition qryDef)
+        {
+            try
+            {
+                foreach (var tableReference in tableReferences)
+                {
+                    if (tableReference is NamedTableReference namedTable)
+                    {
+                        TableDefinition tableDef = new TableDefinition();
+
+                        tableDef.Name = namedTable.SchemaObject.BaseIdentifier.Value.ToLower();
+                        tableDef.Alias = namedTable.Alias?.Value.ToLower();
+                        tableDef.QualifiedName = GetCombinedIdentifiers(namedTable.SchemaObject.Identifiers);
+                        tableDef.ID = GetArasID();
+
+
+                        qryDef.Tables.Add(tableDef);
+
+                    }
+                    else if (tableReference is QualifiedJoin qualifiedJoin)
+                    {
+
+                        TableReference parentJoinTableRef = qualifiedJoin.SecondTableReference;
+                        TableReference childJoinTableRef = qualifiedJoin.FirstTableReference;
+
+                        ExtractTablesAndAliases(new List<TableReference> { childJoinTableRef }, qryDef);
+                        ExtractTablesAndAliases(new List<TableReference> { parentJoinTableRef }, qryDef);
+
+                        // Define Parent and Child and Analyze join
+
+                        string parentJoinClause = null;
+                        string childJoinClause = null;
+                        List<WhereDefinition> whereDefinitions = null;
+
+                        if (qualifiedJoin.SearchCondition is BooleanBinaryExpression binaryExpression)
+                        {
+                            string binaryExpressionType = binaryExpression.BinaryExpressionType.ToString().ToLower();
+                            if (binaryExpressionType != "and")
+                            {
+                                //MessageBox.Show("OR Expression within join is not yet supported", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                                return false;
+                            }
+
+
+                            // Get Join
+                            (string, string) joinClause = GetJoinClause((Microsoft.SqlServer.TransactSql.ScriptDom.BooleanBinaryExpression)qualifiedJoin.SearchCondition);
+                            parentJoinClause = joinClause.Item1;
+                            childJoinClause = joinClause.Item2;
+
+                            // Get Where
+                            whereDefinitions = GetWhereClause(qualifiedJoin.SearchCondition, new List<WhereDefinition>());
+
+                        }
+                        else
+                        {
+                            (string, string) joinClause = GetJoinClause((Microsoft.SqlServer.TransactSql.ScriptDom.BooleanComparisonExpression)qualifiedJoin.SearchCondition);
+                            parentJoinClause = joinClause.Item1;
+                            childJoinClause = joinClause.Item2;
+                        }
+
+
+                        TableDefinition parentTable = qryDef.Tables.FirstOrDefault(t => t.QualifiedNameOrAlias == GetStartIdentifier(parentJoinClause));
+                        parentTable.JoinType = qualifiedJoin.QualifiedJoinType.ToString();
+
+                        TableDefinition childTable = qryDef.Tables.FirstOrDefault(t => t.QualifiedNameOrAlias == GetStartIdentifier(childJoinClause));
+                        if (parentTable != null)
+                        {
+                            childTable.RefID = GetArasID();
+                            childTable.ParentTable = parentTable;
+                            childTable.JoinType = qualifiedJoin.QualifiedJoinType.ToString();
+                            childTable.JoinFilter = FormatXml($@"
+                    <condition>
+	                    <eq>
+		                    <property query_items_xpath=""parent::Item"" name=""{GetEndIdentifier(parentJoinClause)}"" />
+		                    <property name=""{GetEndIdentifier(childJoinClause)}"" />
+	                    </eq>
+                    </condition>");
+
+                        }
+
+                        // Manage Inner Join Type
+                        if (childTable.JoinType == "Inner")
+                        {
+                            if (!string.IsNullOrWhiteSpace(parentTable.WhereFilter))
+                            {
+                                parentTable.WrapAndOnWhereFilter = true;
+                                parentTable.WhereFilter += "\r\n";
+                            }
+
+                            parentTable.WhereFilter += FormatXml($@"
+                    <exists>
+			            <query_reference_path>{childTable.RefID}</query_reference_path>
+		            </exists>");
+                        }
+
+                        // Manage Where on Join
+                        SetWhereDefinition(whereDefinitions, parentTable);
+                    }
+                }
+                return true;
+
+            }
+            catch (Exception ex)
+            {
+                //MessageBox.Show($"Error extracting tables and aliases, please review your SQL Statement!", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+            
+        }
+
+        private static bool SetWhereDefinition(List<WhereDefinition> whereDefinitions, TableDefinition parentTable)
+        {
+            if (whereDefinitions != null)
+            {
+                if (!string.IsNullOrWhiteSpace(parentTable.WhereFilter) || whereDefinitions.Count() > 1)
+                {
+                    parentTable.WrapAndOnWhereFilter = true;
+                    parentTable.WhereFilter += "\r\n";
+                }
+
+                foreach (WhereDefinition whereDefinition in whereDefinitions)
+                {
+                    parentTable.WhereFilter += FormatXml($@"
+                        <{whereDefinition.ComparisonTypeConverter}>
+	                        <property name=""{GetEndIdentifier(whereDefinition.PropertyName)}"" />
+                            <constant>{whereDefinition.Value}</constant>
+                        </{whereDefinition.ComparisonTypeConverter}>");
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ExtractTableProperties(TSqlStatement sqlStatement, QueryDefinition qryDef)
+        {
+            try
+            {
+                foreach (SelectElement selectElement in ((Microsoft.SqlServer.TransactSql.ScriptDom.QuerySpecification)((Microsoft.SqlServer.TransactSql.ScriptDom.SelectStatement)sqlStatement).QueryExpression).SelectElements)
+                {
+                    PropertyDefinition propDef = new PropertyDefinition();
+                    propDef.Alias = ((Microsoft.SqlServer.TransactSql.ScriptDom.SelectScalarExpression)selectElement).ColumnName.Value.ToLower();
+                    propDef.QualifiedName = GetCombinedIdentifiers(((Microsoft.SqlServer.TransactSql.ScriptDom.ColumnReferenceExpression)((Microsoft.SqlServer.TransactSql.ScriptDom.SelectScalarExpression)selectElement).Expression).MultiPartIdentifier.Identifiers);
+                    propDef.Name = GetEndIdentifier(propDef.QualifiedName);
+
+                    TableDefinition relatedTable = qryDef.Tables.FirstOrDefault(t => t.QualifiedNameOrAlias == GetStartIdentifier(propDef.QualifiedName));
+                    if (relatedTable != null)
+                    {
+                        relatedTable.Properties.Add(propDef);
+                    }
+                    else
+                    {
+                        //MessageBox.Show($"Table not found for property {propDef.QualifiedName}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        return false;
+                    }
+
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                //MessageBox.Show($"Error extracting table properties, please review your SQL Statement!", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+        }
+
+        private static bool ExtractWhereDefinition(WhereClause whereClause, QueryDefinition qryDef)
+        {
+            if (whereClause != null)
+            {
+                qryDef.WhereDefinitionList = GetWhereClause(whereClause.SearchCondition, new List<WhereDefinition>());
+
+                if (qryDef.WhereDefinitionList.Count > 0)
+                {
+                    foreach (string propertyName in qryDef.WhereDefinitionList.Select(w => w.PropertyName).Distinct().ToList())
+                    {
+                        TableDefinition parentTable = qryDef.Tables.FirstOrDefault(t => t.QualifiedNameOrAlias == GetStartIdentifier(propertyName));
+                        SetWhereDefinition(qryDef.WhereDefinitionList.Where(w => w.PropertyName == propertyName).ToList(), parentTable);
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static Item WriteQueryDefinition(Innovator inn, QueryDefinition qryDef, SqlToReportOptions options)
+        {
+            Item qryDefDelete = inn.newItem("qry_QueryDefinition", "delete");
+            qryDefDelete.setAttribute("where", $"[qry_QueryDefinition].name = '{options.Name}'");
+            qryDefDelete = qryDefDelete.apply();
+
+            Item qryDefItem = inn.newItem("qry_QueryDefinition", "add");
+            qryDefItem.setProperty("name", options.Name);
+            if (!string.IsNullOrWhiteSpace(options.Title))
+            {
+                qryDefItem.setProperty("description", options.Title);
+            }
+
+            List<string> fixedAliases = new List<string>();
+            foreach (TableDefinition tableDef in qryDef.Tables)
+            {
+                string itemToFind = tableDef.Name.Replace("_", " ").ToLower().Trim();
+                var itemType = inn.newItem("ItemType", "get");
+                itemType.setProperty("name", itemToFind);
+                itemType = itemType.apply();
+
+                if (itemType.isError())
+                {
+                    //MessageBox.Show($"ItemType {itemToFind} not found", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return null;
+                }
+
+                if (options.PrettyAlias)
+                {
+                    {
+                        string name = itemType.getProperty("name");
+
+                        if (!fixedAliases.Any(a => a.Equals(tableDef.Name)))
+                        {
+                            int counter = qryDef.Tables.Count(t => t.Name == tableDef.Name);
+                            tableDef.PrettyAlias = name;
+                            if (counter > 1)
+                            {
+                                int count = 1;
+                                foreach (TableDefinition tableRen in qryDef.Tables.Where(t => t.Name == tableDef.Name && t.ID != tableDef.ID))
+                                {
+                                    //tableRen.Alias = $"{name}{count.ToString()}";
+                                    tableRen.PrettyAlias = $"{name} {count.ToString()}";
+                                    count++;
+                                }
+                                fixedAliases.Add(tableDef.Name);
+                            }
+                        }
+
+                    }
+                }
+
+                Item qryItem = qryDefItem.createRelationship("qry_QueryItem", "add");
+                qryItem.setProperty("ref_id", tableDef.ID);
+                qryItem.setProperty("alias", tableDef.Alias);
+
+                qryItem.setProperty("item_type", itemType.getID());
+                if (options.PrettyAlias)
+                {
+                    qryItem.setProperty("alias", tableDef.PrettyAlias);
+                }
+                else
+                {
+                    qryItem.setProperty("alias", tableDef.TableAliasForInnovator);
+                }
+
+
+                if (!string.IsNullOrWhiteSpace(tableDef.WhereFilter))
+                {
+                    string filter = tableDef.WrapAndOnWhereFilter == true ? $"<and>{tableDef.WhereFilter}</and>" : tableDef.WhereFilter;
+                    qryItem.setProperty("filter_xml", $"<condition>{filter}</condition>");
+                }
+
+                foreach (PropertyDefinition propDef in tableDef.Properties)
+                {
+                    Item qryItemSelectProperty = qryItem.createRelationship("qry_QueryItemSelectProperty", "add");
+                    qryItemSelectProperty.setProperty("property_name", propDef.Name);
+                }
+
+                Item qryReference = qryDefItem.createRelationship("qry_QueryReference", "add");
+                qryReference.setProperty("child_ref_id", tableDef.ID);
+
+                if (tableDef.ParentTable != null)
+                {
+                    qryReference.setProperty("parent_ref_id", tableDef.ParentTable.ID);
+                    qryReference.setProperty("filter_xml", tableDef.JoinFilter);
+                    qryReference.setProperty("ref_id", tableDef.RefID);
+                }
+                else
+                {
+                    qryDef.ContextItemID = itemType.getID();
+                }
+
+            }
+
+            qryDefItem = qryDefItem.apply();
+            if (qryDefItem.isError())
+            {
+                //MessageBox.Show($"Error saving Query Definition: {qryDefItem.getErrorDetail()}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return null;
+            }
+
+            return qryDefItem;
+
+        }
+
+        private static Item WriteReportDefinition(Innovator inn, Item qryDefItem, QueryDefinition qryDef, SqlToReportOptions options)
+        {
+            Item rptDefDelete = inn.newItem("rpt_Report", "delete");
+            rptDefDelete.setAttribute("where", $"[rpt_Report]._name = '{options.Name}'");
+            rptDefDelete = rptDefDelete.apply();
+
+            Item rptReport = inn.newItem("rpt_Report", "add");
+            rptReport.setProperty("_name", options.Name);
+            if (!string.IsNullOrWhiteSpace(options.Title))
+            {
+                rptReport.setProperty("_description", options.Title);
+            }
+            rptReport.setProperty("generate_report_metadata", "1");
+            rptReport.setProperty("_query", qryDefItem.getID());
+            rptReport.setProperty("_context", qryDef.ContextItemID);
+
+            // Inherit shared visibility
+            if (!string.IsNullOrEmpty(options.SSRRerport))
+            {
+                Item ssrReportPerm = inn.newItem("SelfServiceReport", "get");
+                ssrReportPerm.setProperty("name", options.SSRRerport);
+                ssrReportPerm = ssrReportPerm.apply();
+
+                if (!ssrReportPerm.isError())
+                {
+                    ssrReportPerm.fetchRelationships("SelfServiceReportSharedWith");
+                    Item shared = ssrReportPerm.getRelationships("SelfServiceReportSharedWith");
+                    for (int i = 0; i < shared.getItemCount(); i++)
+                    {
+                        Item permission = shared.getItemByIndex(i);
+                        Item permShare = rptReport.createRelationship("rpt_Report IdentityShare", "add");
+
+                        if (permission.getProperty("access_rights") == "readonly" || permission.getProperty("access_rights") == "viewonly")
+                        {
+                            permShare.setProperty("share_mode", "Viewer");
+                        }
+                        else
+                        {
+                            permShare.setProperty("share_mode", "Editor");
+                        }
+
+                        permShare.setProperty("related_id", permission.getProperty("related_id"));
+                    }
+
+                }
+
+            }
+
+            if (!string.IsNullOrEmpty(options.RptReport))
+            {
+                Item RptReportPerm = inn.newItem("rpt_Report", "get");
+                RptReportPerm.setProperty("_name", options.RptReport);
+                RptReportPerm = RptReportPerm.apply();
+
+                if (!RptReportPerm.isError())
+                {
+                    RptReportPerm.fetchRelationships("rpt_Report IdentityShare");
+                    Item shared = RptReportPerm.getRelationships("rpt_Report IdentityShare");
+                    for (int i = 0; i < shared.getItemCount(); i++)
+                    {
+                        Item permission = shared.getItemByIndex(i);
+                        Item permShare = rptReport.createRelationship("rpt_Report IdentityShare", "add");
+                        permShare.setProperty("share_mode", permission.getProperty("share_mode"));
+                        permShare.setProperty("related_id", permission.getProperty("related_id"));
+                    }
+                }
+
+            }
+
+            rptReport = rptReport.apply();
+            if (rptReport.isError())
+            {
+                //MessageBox.Show($"Error saving Report Definition: {rptReport.getErrorDetail()}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return null;
+            }
+
+
+            return rptReport;
+
+        }
+
+        private static (string, string) GetJoinClause(BooleanBinaryExpression expression)
+        {
+
+            if (expression.FirstExpression is BooleanComparisonExpression firstExpChild)
+            {
+                (string, string) joinClause = GetJoinClause(firstExpChild);
+                if (joinClause.Item1 != null)
+                {
+                    return joinClause;
+                }
+            }
+
+            if (expression.FirstExpression is BooleanBinaryExpression firstBoolExpChild)
+            {
+                (string, string) joinClause = GetJoinClause(firstBoolExpChild);
+                if (joinClause.Item1 != null)
+                {
+                    return joinClause;
+                }
+            }
+
+            if (expression.SecondExpression is BooleanComparisonExpression secondExpChild)
+            {
+                (string, string) joinClause = GetJoinClause(secondExpChild);
+                if (joinClause.Item1 != null)
+                {
+                    return joinClause;
+                }
+            }
+
+            if (expression.SecondExpression is BooleanBinaryExpression secondBoolExpChild)
+            {
+                (string, string) joinClause = GetJoinClause(secondBoolExpChild);
+                if (joinClause.Item1 != null)
+                {
+                    return joinClause;
+                }
+            }
+
+            //MessageBox.Show($"Join Expression too complex for this tool", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return (null, null);
+        }
+
+        private static (string, string) GetJoinClause(BooleanComparisonExpression boolExp)
+        {
+            if (boolExp.FirstExpression is ColumnReferenceExpression firstExpChild && boolExp.SecondExpression is ColumnReferenceExpression secondExpChild)
+            {
+                string childExp = GetCombinedIdentifiers(firstExpChild.MultiPartIdentifier.Identifiers);
+                string parentExp = GetCombinedIdentifiers(secondExpChild.MultiPartIdentifier.Identifiers);
+                return (parentExp, childExp);
+            }
+
+            return (null, null);
+        }
+
+        private static List<WhereDefinition> GetWhereClause(TSqlFragment boolExp, List<WhereDefinition> whereDefList)
+        {
+
+            if (boolExp is BooleanComparisonExpression boolCompExp)
+            {
+                if (boolCompExp.FirstExpression is ColumnReferenceExpression columRef &&
+                   (boolCompExp.SecondExpression is StringLiteral || boolCompExp.SecondExpression is IntegerLiteral))
+                {
+                    string propertyName = GetCombinedIdentifiers(columRef.MultiPartIdentifier.Identifiers);
+                    string value = null;
+                    if (boolCompExp.SecondExpression is StringLiteral str) { value = str.Value; }
+                    else if (boolCompExp.SecondExpression is IntegerLiteral i) { value = i.Value; }
+                    string comparisonType = boolCompExp.ComparisonType.ToString();
+
+                    whereDefList.Add(new WhereDefinition { PropertyName = propertyName, Value = value, ComparisonType = comparisonType });
+                }
+
+                GetWhereClause(((BooleanComparisonExpression)boolCompExp).FirstExpression, whereDefList);
+                GetWhereClause(((BooleanComparisonExpression)boolCompExp).SecondExpression, whereDefList);
+
+            }
+            else if (boolExp is LikePredicate likePredicate)
+            {
+                if (likePredicate.FirstExpression is ColumnReferenceExpression columRef &&
+                   (likePredicate.SecondExpression is StringLiteral || likePredicate.SecondExpression is IntegerLiteral))
+                {
+                    string propertyName = GetCombinedIdentifiers(columRef.MultiPartIdentifier.Identifiers);
+                    string value = null;
+                    if (likePredicate.SecondExpression is StringLiteral str) { value = str.Value; }
+                    else if (likePredicate.SecondExpression is IntegerLiteral i) { value = i.Value; }
+                    string comparisonType = "LIKE";
+
+                    whereDefList.Add(new WhereDefinition { PropertyName = propertyName, Value = value, ComparisonType = comparisonType });
+                }
+
+                GetWhereClause(((LikePredicate)likePredicate).FirstExpression, whereDefList);
+                GetWhereClause(((LikePredicate)likePredicate).SecondExpression, whereDefList);
+            }
+            else if (boolExp is BooleanBinaryExpression boolBinaryExp)
+            {
+                GetWhereClause(((BooleanBinaryExpression)boolBinaryExp).FirstExpression, whereDefList);
+                GetWhereClause(((BooleanBinaryExpression)boolBinaryExp).SecondExpression, whereDefList);
+            }
+
+            return whereDefList;
+        }
+
+        private static string GetCombinedIdentifiers(IList<Identifier> Identifier)
+        {
+            return string.Join(".", Identifier.Select(item => item.Value)).ToLower();
+        }
+
+        private static string GetEndIdentifier(string str)
+        {
+            if (str.Contains("."))
+            {
+                string[] parts = str.Split('.');
+                return parts[parts.Length - 1];
+            }
+            else
+            {
+                return str;
+            }
+
+        }
+
+        private static string GetStartIdentifier(string str)
+        {
+            if (str.Contains("."))
+            {
+                string[] parts = str.Split('.');
+                return string.Join(".", parts, 0, parts.Length - 1);
+            }
+            else
+            {
+                return str;
+            }
+
+        }
+
+        public static string GetArasID()
+        {
+            Guid guid = Guid.NewGuid();
+            string guidWithoutHyphens = guid.ToString("N"); // "N" format removes hyphens
+
+            return guidWithoutHyphens.ToUpper();
+        }
+
+        static string FormatXml(string xmlContent)
+        {
+            try
+            {
+                var xmlDoc = System.Xml.Linq.XDocument.Parse(xmlContent);
+                return xmlDoc.ToString();
+            }
+            catch (XmlException)
+            {
+                // Handle XML parsing error
+                return xmlContent; // Return the original content in case of an error
+            }
+        }
+
+        public class PropertyChecker
+        {
+            public static bool HasProperty(object obj, string propertyName)
+            {
+                return HasProperty(obj, propertyName, new HashSet<object>());
+            }
+
+            private static bool HasProperty(object obj, string propertyName, HashSet<object> visitedObjects)
+            {
+                if (obj == null || visitedObjects.Contains(obj))
+                {
+                    return false;
+                }
+
+                visitedObjects.Add(obj);
+
+                var objectType = obj.GetType();
+                if (objectType.GetProperty(propertyName) != null)
+                {
+                    return true;
+                }
+
+                if (obj is System.Collections.IEnumerable enumerable)
+                {
+                    foreach (var item in enumerable)
+                    {
+                        if (HasProperty(item, propertyName, visitedObjects))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                var properties = objectType.GetProperties();
+                foreach (var property in properties)
+                {
+                    var propertyValue = property.GetValue(obj, null);
+                    if (HasProperty(propertyValue, propertyName, visitedObjects))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public class QueryDefinition
+        {
+            public List<TableDefinition> Tables = new List<TableDefinition>();
+
+            public List<WhereDefinition> WhereDefinitionList = new List<WhereDefinition>();
+
+            public string ContextItemID { get; set; }
+        }
+
+        public class TableDefinition
+        {
+            public string ID { get; set; }
+
+            public string RefID { get; set; }
+            public TableDefinition ParentTable { get; set; }
+            public string Name { get; set; }
+            public string Alias { get; set; }
+
+            public string PrettyAlias { get; set; }
+            public string QualifiedName { get; set; }
+            public string QualifiedNameOrAlias
+            {
+                get
+                {
+                    return Alias?.ToLower() ?? QualifiedName?.ToLower();
+                }
+            }
+
+            public string TableAliasForInnovator
+            {
+                get
+                {
+                    string tableName = Alias?.ToLower() ?? Name.ToLower();
+
+                    return tableName.Length > 32 ? tableName.Substring(0, 32) : tableName;
+                }
+
+            }
+            public string JoinType { get; set; }
+
+            public string JoinFilter { get; set; }
+
+            public bool WrapAndOnWhereFilter { get; set; } = false;
+
+            public string WhereFilter { get; set; }
+
+            public List<PropertyDefinition> Properties = new List<PropertyDefinition>();
+        }
+
+        public class PropertyDefinition
+        {
+            public string Name { get; set; }
+            public string Alias { get; set; }
+
+            public string QualifiedName { get; set; }
+
+        }
+
+        public class WhereDefinition
+        {
+            public string PropertyName { get; set; }
+            public string Value { get; set; }
+
+            public string ComparisonType { get; set; }
+            public string ComparisonTypeConverter
+            {
+                get
+                {
+                    switch (ComparisonType)
+                    {
+                        case "Equals":
+                        case "=":
+                            return "eq";
+                        case "!=":
+                            return "ne";
+                        case ">":
+                            return "gt";
+                        case "<":
+                            return "lt";
+                        case ">=":
+                            return "ge";
+                        case "<=":
+                            return "le";
+                        case "LIKE":
+                            return "like";
+                        default:
+                            return "eq";
+
+                    }
+                }
+
+            }]]></method_code>
+  <method_type>C#</method_type>
+  <name>labs_sqlToReport</name>
+ </Item>
+</AML>

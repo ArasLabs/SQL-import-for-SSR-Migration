@@ -1,0 +1,17 @@
+﻿<AML>
+ <Item type="Method" id="93DE98AE0ACF4F678E96DABFC7B9FC9E" action="add">
+  <execution_allowed_to keyed_name="Administrators" type="Identity">2618D6F5A90949BAA7E920D1B04C7EE1</execution_allowed_to>
+  <method_code><![CDATA[var sql = getFieldByName("SQL").getElementsByTagName("textarea")[0].value;
+var qdName = getFieldByName("qdName").getElementsByTagName("input")[0].value;
+var reportBool = getFieldByName("reportBool").getElementsByTagName("input")[0].value;
+
+result = top.aras.newObject();
+result.sql = sql;
+result.qdName = qdName;
+result.reportBool = reportBool;
+parent.args.dialog.result = result;
+parent.args.dialog.close();]]></method_code>
+  <method_type>JavaScript</method_type>
+  <name>labs_returnImportDialog</name>
+ </Item>
+</AML>
